@@ -1,0 +1,572 @@
+﻿using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using System;
+
+
+public enum DamageType
+{
+	NONE, EXPLODE, CUT, SHARP,
+	BLUNT, BULLET, FIRE, COLD,
+	ACID, LIGHT, ELECTRO, RADIATION,
+	PLASMA
+}
+
+public struct Defence
+{
+	float DEFAULT;
+	float EXPLODE, CUT, SHARP;
+	float BLUNT, BULLET, FIRE, COLD;
+	float ACID, LIGHT, ELECTRO, RADIATION;
+	float PLASMA;
+
+	public float ReceiveDamage(float damage, DamageType damageType)
+	{
+		switch(damageType)
+		{
+			default:                     damage *= 1.0f - DEFAULT;     break;
+			case DamageType.EXPLODE:     damage *= 1.0f - EXPLODE;     break;
+			case DamageType.CUT:         damage *= 1.0f - CUT;         break;
+			case DamageType.SHARP:       damage *= 1.0f - SHARP;       break;
+			case DamageType.BLUNT:       damage *= 1.0f - BLUNT;       break;
+			case DamageType.BULLET:      damage *= 1.0f - BULLET;      break;
+			case DamageType.FIRE:        damage *= 1.0f - FIRE;        break;
+			case DamageType.COLD:        damage *= 1.0f - COLD;        break;
+			case DamageType.ACID:        damage *= 1.0f - ACID;        break;
+			case DamageType.LIGHT:       damage *= 1.0f - LIGHT;       break;
+			case DamageType.ELECTRO:     damage *= 1.0f - ELECTRO;     break;
+			case DamageType.RADIATION:   damage *= 1.0f - RADIATION;   break;
+			case DamageType.PLASMA:      damage *= 1.0f - PLASMA;      break;
+		}
+
+		if(damage < 0) { damage = 0; }
+
+		return damage;
+	}
+}
+
+public enum ResourceType
+{
+	NONE, OTHER, ENERGY, OIL,
+	GAS, ACID, WATER, HEAT
+}
+
+
+public class GameLayer
+{
+	public const int unit = 8;
+	public const int missile = 9;
+	public const int item = 10;
+	public const int collectors = 11;
+	//int destructible = ;
+}
+
+
+public class Unit : MonoBehaviour
+{
+	public bool flying = false;
+	public bool moveable = true;
+
+	public Rigidbody body;
+	protected BoxCollider box;
+	public float acceleration, friction, breaking;
+	public float maxSpeed, angularSpeed;
+
+	public Vector3 view_direction, move_direction;
+	//public Vector3 legs_direction;
+
+	public Tool tool1, tool2, tool3;
+
+	public float resource1, resource2, resource3;
+	public Color resource1Color, resource2Color, resource3Color;
+	public ResourceType resource1Type, resource2Type, resource3Type;
+	public float headState=100, bodyState=100, legsState=100, storageState=100;
+
+	public Sprite headSprite, bodySprite, legsSprite, storageSprite;
+	public Sprite resource1Sprite, resource2Sprite, resource3Sprite;
+
+	public Defence headDefence, bodyDefence, legsDefence, storageDefence;
+
+	public float constConsumption = 0.1f; //units per second
+	public ResourceType constConsumptionResource = ResourceType.ENERGY;
+
+	public float moveConsumption = 0.2f; //units per second
+	public ResourceType moveConsumptionResource = ResourceType.ENERGY;
+
+	public float pickDistance = 0;
+
+	public Animator animator;
+	public GameObject model;
+	public Item carryItem;
+
+	public string handPath;
+	public Transform hand;
+
+	public List<Effect> effects;
+	public Collector collector;
+
+	public bool frontLeftWheel, frontRightWheel;
+	public bool backLeftWheel, backRightWheel;
+	public bool frontMiddleWheel;
+	
+
+	public virtual void Start()
+	{
+		body = GetComponent<Rigidbody>();
+		box = GetComponent<BoxCollider>();
+		if(body != null && box != null)
+		{
+			body.centerOfMass = box.center;
+		}
+
+		{
+			Transform find = transform.Find("Model");
+			if(find != null)
+			{
+				model = find.gameObject;
+			}
+			else
+			{
+				Debug.Log("Model object was not found for " + gameObject.name);
+			}
+		}
+
+		if(model != null)
+		{
+			animator = model.GetComponent<Animator>();
+			if(animator == null)
+			{
+				Debug.Log("Failed to link animator for " + gameObject.name);
+			}
+		}
+
+		collector = GetComponentInChildren<Collector>();
+		if(collector != null)
+		{
+			collector.unit = this;
+		}
+		else
+		{
+			Debug.Log("Failed to link collector for " + gameObject.name);
+		}
+
+		hand = transform.Find(handPath);
+
+		if(acceleration <= 0){acceleration = 3.6f;}
+		if(friction <= 0){friction = 4.8f;}
+		if(breaking <= 0){breaking = 8.0f;}
+		if(maxSpeed <= 0){maxSpeed = 5.0f;}
+		if(angularSpeed <= 0){angularSpeed = 180.0f;}
+
+		headState = 100.0f;
+		bodyState = 100.0f;
+		legsState = 100.0f;
+		storageState = 100.0f;
+
+		transform.position += Vector3.up * 0.01f; //fixes physics, units stuck in ground
+	}
+	
+
+	public virtual void Update()
+	{
+		//spend resources
+		Spend(constConsumption * Time.deltaTime, constConsumptionResource);
+
+		if(move_direction != Vector3.zero)
+		{
+			Spend(moveConsumption * Time.deltaTime, moveConsumptionResource);
+		}
+
+		const float gap = 0.01f;
+		//RaycastHit raycast;
+		float speed = body.velocity.magnitude;
+
+		//failsafe
+		if(transform.position.magnitude > 100.0f)
+		{
+			transform.position = new Vector3(0, 75, 0);
+			transform.rotation = Quaternion.identity;
+			body.velocity = Vector3.zero;
+		}
+
+		//if(Physics.Raycast(new Ray(transform.position, Vector3.down * gap), out raycast, gap, 1)
+		//	|| Physics.Raycast(new Ray(transform.position + transform.forward * box.size.z * 0.5f,
+		//			Vector3.down * gap), out raycast, gap, 1)
+		//	|| Physics.Raycast(new Ray(transform.position - transform.forward * box.size.z * 0.5f,
+		//			Vector3.down * gap), out raycast, gap, 1)
+		////if(Physics.Raycast(new Ray(transform.position, -transform.up), 0.1f, 1)
+		////	|| Physics.Raycast(new Ray(transform.position + transform.forward * box.size.z * 0.5f, -transform.up), 0.1f, 1)
+		////	|| Physics.Raycast(new Ray(transform.position - transform.forward * box.size.z * 0.5f, -transform.up), 0.1f, 1)
+		//)
+		//{
+		//	body.useGravity = false;
+		//	body.freezeRotation = true;
+		//	body.rotation = Quaternion.LookRotation(transform.forward,raycast.normal);
+		//} else
+		//{
+		//	body.useGravity = true;
+		//	body.freezeRotation = false;
+		//	return;
+		//}
+
+		Position();
+
+		//Vector3 front = transform.position + transform.forward * box.size.z * 0.5f;
+		//Vector3 back = transform.position - transform.forward * box.size.z * 0.5f;
+
+		//if(Physics.Raycast(new Ray(front, body.velocity * Time.deltaTime), out raycast, 1))
+		//{
+		//	Vector3 temp = raycast.point + raycast.normal * gap;
+		//	temp = front + (temp - front).normalized * speed * Time.deltaTime;
+		//	front += temp - raycast.point;
+		//}
+
+		//transform.position = (front + back) * 0.5f;
+		//transform.rotation = Quaternion.LookRotation(front - back);
+
+
+
+		//if(Physics.Raycast(new Ray(transform.position,move_direction), 1.5f, 1))
+		//{
+		//	//move_direction.y += 1;
+		//	//body.angularVelocity = new Vector3(30, 0, 0);
+		//	body.AddForceAtPosition(new Vector3(0, 0.5f, 0),
+		//		transform.position + transform.forward * box.size.z * 0.5f);
+		//}
+		//else
+		//{
+		//	move_direction.y = 0;
+		//}
+
+
+		move_direction.Normalize();
+
+		if(move_direction != Vector3.zero)
+		{
+			float q = Vector3.Angle(view_direction, move_direction) / 180.0f;
+			q = acceleration * (1.0f - q) + breaking * q;
+
+			float f = Vector3.Angle(body.velocity, move_direction) / 180.0f;
+			float V = body.velocity.magnitude - friction * Time.deltaTime * f;
+			if(V < 0){V = 0;}
+
+			body.velocity = body.velocity.normalized * V + move_direction * q * Time.deltaTime;
+			if(body.velocity.magnitude > maxSpeed)
+			{
+				body.velocity = body.velocity.normalized * maxSpeed;
+			}
+
+			if(animator != null)
+			{
+				//float dissonance = Vector3.Dot(transform.right, move_direction);
+				//if(f > 0.1f)
+				//{
+				//	animator.Play("Right");
+				//}
+				//else if(f < -0.1f)
+				//{
+				//	animator.Play("Left");
+				//}
+				//else
+
+				{
+					animator.Play("Move");
+				}
+
+				//Transform fnd = transform.Find("Model/Armature/Heart/Waist");
+				//if(fnd != null)
+				//{
+				//	fnd.localRotation = Quaternion.LookRotation(move_direction + Vector3.left * 50.0f);
+				//	fnd.position = Vector3.one;
+				//}
+			}
+		}
+		else
+		{
+			float V = body.velocity.magnitude - friction * Time.deltaTime;
+			if(V < 0){V = 0;}
+			body.velocity = body.velocity.normalized * V;
+		}
+
+		//if(body.velocity != Vector3.zero)
+		//{
+		//	float angle = Vector3.Angle(body.velocity, view_direction);
+		//	float maxAngle = angularSpeed * Time.deltaTime;
+		//	//Debug.Log("Angle " + angle.ToString() + "; Max angle " + maxAngle.ToString());
+		//	if(angle > maxAngle)
+		//	{
+		//		angle = maxAngle * Mathf.PI / 180.0f;
+		//		float V = body.velocity.magnitude;
+		//		body.velocity = Vector3.RotateTowards(view_direction, body.velocity, angle, 1.0f);
+		//		body.velocity = body.velocity.normalized * V;
+		//	}
+		//}
+
+		if(view_direction != Vector3.zero
+		&& move_direction != Vector3.zero)
+		{
+			float angle = Vector3.Angle(move_direction, view_direction);
+			float maxAngle = angularSpeed * Time.deltaTime;
+			//Debug.Log("Angle " + angle.ToString() + "; Max angle " + maxAngle.ToString());
+			if(angle > maxAngle)
+			{
+				angle = maxAngle * Mathf.PI / 180.0f;
+				view_direction = Vector3.RotateTowards(view_direction, move_direction, angle, 1.0f).normalized;
+			}
+			transform.rotation = Quaternion.LookRotation(view_direction);
+
+			if(frontMiddleWheel)
+			{
+				Vector3 back = transform.position - transform.forward * box.size.z * 0.5f;
+				Vector3 front = transform.position + transform.forward * box.size.z * 0.5f;
+				Vector3 direction = front - back;
+				Quaternion q = Quaternion.AngleAxis(-1.0f, transform.right);
+				direction = q * direction;
+
+				transform.position = back + direction * 0.5f;
+				transform.rotation = Quaternion.LookRotation(direction);
+			}
+
+			//float angle2 = Vector3.Angle(move_direction, view_direction);
+			//float maxAngle2 = angularSpeed * 2.0f * Time.deltaTime;
+			//if(angle2 > maxAngle2)
+			//{
+			//	angle2 = maxAngle2 * Mathf.PI / 180.0f;
+			//	legs_direction = Vector3.RotateTowards(view_direction, move_direction, angle2, 1.0f).normalized;
+			//}
+			//else
+			//{
+			//	legs_direction = view_direction;
+			//}
+		}
+
+		view_direction = transform.forward;
+		//transform.rotation = Quaternion.LookRotation(view_direction);
+	}
+
+
+	void Position()
+	{
+		int wheelSum =
+			Convert.ToInt32(frontLeftWheel) +
+			Convert.ToInt32(frontRightWheel) +
+			Convert.ToInt32(backLeftWheel) +
+			Convert.ToInt32(frontRightWheel);
+
+		if(wheelSum >= 3)
+		{
+			body.useGravity = false;
+			body.freezeRotation = true;
+			//body.rotation = Quaternion.LookRotation(transform.forward, raycast.normal);
+
+		}
+		else
+		{
+			body.useGravity = true;
+			body.freezeRotation = false;
+			return;
+		}
+	}
+
+
+	private void UpdateEffects()
+	{
+		////reverse loop to allow removing elements while iterating
+		//for(int i = effects.Count - 1; i >= 0; i--)
+		//{
+		//	if(!effects[i].Update())
+		//	{
+		//		effects[i].Cancel(this);
+		//		effects.RemoveAt(i);
+		//	}
+		//}
+	}
+
+	public void AddEffect(GameObject effect)
+	{
+		if(effect == null){return;}
+
+		foreach(Transform child in transform)
+		{
+			if(child.name == effect.name)
+			{
+				Effect effectData = child.GetComponent<Effect>();
+				if(effect != null){effectData.Start();}
+				return;
+			}
+		}
+
+		GameObject newEffect = Instantiate(effect.gameObject);
+		newEffect.name = effect.name;
+		newEffect.transform.position = transform.position;
+		newEffect.transform.SetParent(transform);
+
+		Effect newEffectData = newEffect.GetComponent<Effect>();
+		if(newEffectData != null){newEffectData.Apply(this);}
+	}
+
+	public virtual void ReceiveDamage(float damage, DamageType damageType){}
+
+	public virtual void DamageFront(float damage, DamageType damageType){}
+	public virtual void DamageBack(float damage, DamageType damageType){}
+	public virtual void DamageLeft(float damage, DamageType damageType){}
+	public virtual void DamageRight(float damage, DamageType damageType){}
+	public virtual void DamageInside(float damage, DamageType damageType){}
+	public virtual void DamageAllSides(float damage, DamageType damageType){}
+	public virtual void DamageBottom(float damage, DamageType damageType){}
+
+	public void DamageHead(float damage, DamageType damageType)
+	{
+		headState -= headDefence.ReceiveDamage(damage, damageType);
+		if(headState < 0){headState = 0;}
+	}
+
+	public void DamageBody(float damage, DamageType damageType)
+	{
+		bodyState -= bodyDefence.ReceiveDamage(damage, damageType);
+		if(bodyState < 0){bodyState = 0;}
+	}
+
+	public void DamageLegs(float damage, DamageType damageType)
+	{
+		legsState -= legsDefence.ReceiveDamage(damage, damageType);
+		if(legsState < 0){legsState = 0;}
+	}
+
+	public void DamageStorage(float damage, DamageType damageType)
+	{
+		storageState -= storageDefence.ReceiveDamage(damage, damageType);
+		if(storageState < 0){storageState = 0;}
+	}
+
+	public virtual void HeadDestroyed() { }
+	public virtual void BodyDestroyed() { }
+	public virtual void LegsDestroyed() { }
+	public virtual void StorageDestroyed() { }
+	public virtual void Tool1Destroyed() { }
+	public virtual void Tool2Destroyed() { }
+	public virtual void Tool3Destroyed() { }
+
+	public virtual void Move(Vector2 direction)
+	{
+		if(!moveable) { return; }
+
+		move_direction = new Vector3(direction.x, 0, direction.y);
+
+		//move_direction =
+		//	Quaternion.LookRotation(new Vector3(transform.forward.x, 0, transform.forward.z)) *
+		//	new Vector3(direction.x, 0, direction.y);
+
+		//float q = 1.0f / new Vector3(transform.forward.x, 0, transform.forward.z).magnitude;
+		//move_direction = new Vector3(
+		//	direction.x * q,
+		//	transform.forward.y,
+		//	direction.y * q);
+	}
+
+	public void Spend(float value, ResourceType resource)
+	{
+		if(resource == ResourceType.NONE)
+		{
+			Debug.Log("Can't spend resource NONE");
+			return;
+		}
+
+		if(resource == ResourceType.OTHER)
+		{
+			Debug.Log("Can't spend resource OTHER");
+			return;
+		}
+
+		if(resource1Type == resource)
+		{
+			resource1 -= value;
+			if(resource1 < 0) { resource1 = 0; }
+			if(resource1 > 100) { resource1 = 100; }
+			return;
+		}
+
+		if(resource2Type == resource)
+		{
+			resource2 -= value;
+			if(resource2 < 0) { resource2 = 0; }
+			if(resource1 > 100) { resource1 = 100; }
+			return;
+		}
+
+		if(resource3Type == resource)
+		{
+			resource3 -= value;
+			if(resource3 < 0) { resource3 = 0; }
+			if(resource1 > 100) { resource1 = 100; }
+			return;
+		}
+	}
+
+	private void OnTriggerEnter(Collider other)
+	{
+		//Debug.Log("Trigger happened");
+		if(other.gameObject.layer == GameLayer.item)
+		{
+			Item item = other.GetComponent<Item>();
+			if(item != null)
+			{
+				//item.Contact(this);
+				Contact(item);
+			}
+		}
+	}
+
+
+	//private void OnTriggerExit(Collider other)
+	//{
+	//	
+	//}
+
+	public void Pick()
+	{
+		Debug.Log("Pick ordered to " + name);
+
+		if(collector != null)
+		{
+			collector.gameObject.SetActive(true);
+		}
+	}
+
+	public virtual void Pick(Item item)
+	{
+		Debug.Log("Picked an item " + item.name);
+
+		if(hand == null) { return; }
+
+		item.body.detectCollisions = false;
+		item.transform.SetParent(hand);
+		item.transform.localPosition = Vector3.zero;
+	}
+
+	public virtual void Contact(Item item){}
+
+	public virtual void ContactItemAcid(Item item){}
+	public virtual void ContactItemArrow(Item item){}
+	public virtual void ContactItemBaloon(Item item){}
+	public virtual void ContactItemBattery(Item item){}
+	public virtual void ContactItemBullets(Item item){}
+	public virtual void ContactItemCrystal(Item item){}
+	public virtual void ContactItemGear(Item item){}
+	public virtual void ContactItemGrenade(Item item){}
+	public virtual void ContactItemIronball(Item item){}
+	public virtual void ContactItemOil(Item item){}
+	public virtual void ContactItemRock(Item item){}
+	public virtual void ContactItemRocket(Item item){}
+	public virtual void ContactItemSaw(Item item){}
+	public virtual void ContactItemSlime(Item item){}
+	public virtual void ContactItemUranium(Item item){}
+	public virtual void ContactItemWater(Item item){}
+
+	public virtual void ContactPuddeAcid(Item item){}
+	public virtual void ContactPuddeFlame(Item item){}
+	public virtual void ContactPuddeIce(Item item){}
+	public virtual void ContactPuddeOil(Item item){}
+	public virtual void ContactPuddeSlime(Item item){}
+	public virtual void ContactPuddeWater(Item item){}
+}
